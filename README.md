@@ -61,7 +61,7 @@ python3 main.py exemplos/control_flow.jss
 python3 main.py exemplos/operators.jss
 ```
 
-Saída esperada para todos:
+Saída esperada para todos (exceto 'operators.jss'):
 
 ```
 Compilação bem-sucedida.
