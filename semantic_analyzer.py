@@ -15,6 +15,7 @@ class SemanticAnalyzer(JSSVisitor):
         self.errors = JSSErrorListener('Semântico')
         self._function_stack = []
         self._loop_depth = 0
+        self._class_stack = []
         self._register_builtins()
 
     # ─── Pilha de escopos ─────────────────────────────────────────
@@ -71,6 +72,11 @@ class SemanticAnalyzer(JSSVisitor):
         ident_tok = ctx.IDENT()
         nome = ident_tok.getText()
         tipo_retorno = self._build_type(ctx.type_(), ctx.INT_LIT())
+        if tipo_retorno.endswith('[]'):
+            self.errors.add_error(
+                ident_tok.symbol.line,
+                f"função '{nome}' não pode ter tipo de retorno vetor ('{tipo_retorno}')"
+            )
         param_types = []
         if ctx.params() is not None:
             for p in ctx.params().param():
@@ -88,10 +94,81 @@ class SemanticAnalyzer(JSSVisitor):
     def _declare_class(self, ctx):
         ident_tok = ctx.IDENT()
         nome = ident_tok.getText()
+        linha = ident_tok.symbol.line
+
+        atributos = {}
+        metodos = {}
+        constructor = None
+        seen_method_or_ctor = False
+
+        for member in ctx.classMember():
+            if member.attrDecl() is not None:
+                attr = member.attrDecl()
+                attr_tok = attr.IDENT()
+                attr_nome = attr_tok.getText()
+                attr_tipo = self._build_type(attr.type_(), attr.INT_LIT())
+                attr_linha = attr_tok.symbol.line
+                if seen_method_or_ctor:
+                    self.errors.add_error(
+                        attr_linha,
+                        f"atributo '{attr_nome}' declarado depois de método/construtor (atributos devem vir primeiro)"
+                    )
+                if attr_nome in atributos:
+                    self.errors.add_error(attr_linha, f"atributo '{attr_nome}' já declarado na classe '{nome}'")
+                else:
+                    atributos[attr_nome] = attr_tipo
+            elif member.constructorDecl() is not None:
+                seen_method_or_ctor = True
+                ctor = member.constructorDecl()
+                ctor_tok = ctor.IDENT()
+                ctor_class_name = ctor_tok.getText()
+                ctor_linha = ctor_tok.symbol.line
+                if ctor_class_name != nome:
+                    self.errors.add_error(
+                        ctor_linha,
+                        f"constructor deve ter o nome da classe '{nome}', encontrado '{ctor_class_name}'"
+                    )
+                if constructor is not None:
+                    self.errors.add_error(ctor_linha, f"construtor da classe '{nome}' já declarado")
+                else:
+                    param_types = []
+                    if ctor.params() is not None:
+                        for p in ctor.params().param():
+                            param_types.append(self._build_type(p.type_(), p.INT_LIT()))
+                    constructor = {'params': param_types}
+            elif member.methodDecl() is not None:
+                seen_method_or_ctor = True
+                m = member.methodDecl()
+                m_tok = m.IDENT()
+                m_nome = m_tok.getText()
+                m_linha = m_tok.symbol.line
+                m_tipo = self._build_type(m.type_(), m.INT_LIT())
+                if m_tipo.endswith('[]'):
+                    self.errors.add_error(
+                        m_linha,
+                        f"método '{m_nome}' não pode ter tipo de retorno vetor ('{m_tipo}')"
+                    )
+                if m_nome in metodos or m_nome in atributos:
+                    self.errors.add_error(m_linha, f"membro '{m_nome}' já declarado na classe '{nome}'")
+                else:
+                    param_types = []
+                    if m.params() is not None:
+                        for p in m.params().param():
+                            param_types.append(self._build_type(p.type_(), p.INT_LIT()))
+                    metodos[m_nome] = {'tipo_retorno': m_tipo, 'params': param_types}
+
+        if constructor is None:
+            self.errors.add_error(linha, f"classe '{nome}' não declara um constructor")
+
         self.declare(
             nome,
-            {'categoria': 'class'},
-            ident_tok.symbol.line,
+            {
+                'categoria': 'class',
+                'atributos': atributos,
+                'metodos': metodos,
+                'constructor': constructor,
+            },
+            linha,
         )
 
     # ─── Escopos: bloco, função, for ─────────────────────────────
@@ -101,6 +178,83 @@ class SemanticAnalyzer(JSSVisitor):
         self.visitChildren(ctx)
         self.pop_scope()
         return None
+
+    def visitClassDecl(self, ctx):
+        nome = ctx.IDENT().getText()
+        self._class_stack.append(nome)
+        self.visitChildren(ctx)
+        self._class_stack.pop()
+        return None
+
+    def _extract_lvalue_from_expr(self, expr_ctx):
+        if expr_ctx.assignOp() is not None:
+            return None
+        return self._extract_lvalue(expr_ctx.orExpr())
+
+    def _is_lvalue_postfix(self, postfix_ctx):
+        if postfix_ctx.argList() is not None:
+            return False
+        if postfix_ctx.expr() is not None:
+            return True
+        if postfix_ctx.IDENT() is not None:
+            return True
+        if postfix_ctx.primary() is None:
+            return False
+        primary = postfix_ctx.primary()
+        if primary.IDENT() is None:
+            return False
+        if primary.getChild(0).getText() == 'new':
+            return False
+        info = self.lookup(primary.IDENT().getText())
+        if info is None:
+            return False
+        return info.get('categoria') in ('var', 'param')
+
+    def _validate_input_args(self, call_ctx, arg_types):
+        if call_ctx.argList() is None:
+            return
+        args = call_ctx.argList().expr()
+        for i, (e, t) in enumerate(zip(args, arg_types)):
+            lvalue = self._extract_lvalue_from_expr(e)
+            if lvalue is None or not self._is_lvalue_postfix(lvalue):
+                self.errors.add_error(
+                    e.start.line,
+                    f"argumento {i+1} de 'input' deve ser uma variável"
+                )
+                continue
+            if t != '?' and t not in ('int', 'real', 'str'):
+                self.errors.add_error(
+                    e.start.line,
+                    f"argumento {i+1} de 'input' deve ser 'int', 'real' ou 'str', recebeu '{t}'"
+                )
+
+    def _validate_console_log_args(self, call_ctx, arg_types):
+        if call_ctx.argList() is None:
+            return
+        args = call_ctx.argList().expr()
+        for i, (e, t) in enumerate(zip(args, arg_types)):
+            if t == '?':
+                continue
+            if not self._is_primitive(t):
+                self.errors.add_error(
+                    e.start.line,
+                    f"argumento {i+1} de 'console.log': tipo '{t}' não pode ser impresso diretamente (converta com str())"
+                )
+
+    def _check_args(self, ctx, expected, actual, what):
+        line = ctx.start.line
+        if len(expected) != len(actual):
+            self.errors.add_error(
+                line,
+                f"{what} espera {len(expected)} argumento(s), recebeu {len(actual)}"
+            )
+            return
+        for i, (e, a) in enumerate(zip(expected, actual)):
+            if not self._is_assignable(e, a):
+                self.errors.add_error(
+                    line,
+                    f"argumento {i+1} de {what}: esperado '{e}', recebeu '{a}'"
+                )
 
     def _enter_callable(self, params_ctx, block_ctx, tipo_retorno, nome, linha, kind):
         self._function_stack.append({
@@ -225,27 +379,36 @@ class SemanticAnalyzer(JSSVisitor):
     def visitReturnStmt(self, ctx):
         linha = ctx.start.line
         has_expr = ctx.expr() is not None
+        expr_type = self.visit(ctx.expr()) if has_expr else None
 
         if not self._function_stack:
             self.errors.add_error(linha, "'return' fora de uma função")
-            return self.visitChildren(ctx)
+            return None
 
         current = self._function_stack[-1]
-        if current['tipo_retorno'] == 'void' and has_expr:
+        declared = current['tipo_retorno']
+
+        if declared == 'void' and has_expr:
             if current['kind'] == 'constructor':
                 self.errors.add_error(linha, "construtor não pode retornar um valor")
             else:
                 self.errors.add_error(linha, "função 'void' não pode retornar um valor")
-        elif current['tipo_retorno'] != 'void' and not has_expr:
+        elif declared != 'void' and not has_expr:
             self.errors.add_error(
                 linha,
-                f"'return' sem valor em função com tipo de retorno '{current['tipo_retorno']}'"
+                f"'return' sem valor em função com tipo de retorno '{declared}'"
             )
+        elif has_expr and declared != 'void':
+            if not self._is_assignable(declared, expr_type):
+                self.errors.add_error(
+                    linha,
+                    f"'return' de tipo '{expr_type}' incompatível com retorno declarado '{declared}' de '{current['nome']}'"
+                )
 
         if has_expr:
             current['has_return_expr'] = True
 
-        return self.visitChildren(ctx)
+        return None
 
     # ─── Declarações de variável e constante ─────────────────────
 
@@ -440,6 +603,14 @@ class SemanticAnalyzer(JSSVisitor):
             return
 
         if postfix_ctx.IDENT() is not None:
+            base_ident = self._base_ident_of_postfix(postfix_ctx.postfixExpr())
+            if base_ident is not None:
+                info = self.lookup(base_ident)
+                if info is not None and info.get('categoria') == 'const':
+                    self.errors.add_error(
+                        postfix_ctx.start.line,
+                        f"não é possível alterar atributo do objeto constante '{base_ident}'"
+                    )
             return
 
         if postfix_ctx.primary() is None:
@@ -474,26 +645,39 @@ class SemanticAnalyzer(JSSVisitor):
                 f"'{nome}' não é uma variável e não pode receber atribuição"
             )
 
-    def _infer_call_return_type(self, callee_ctx):
-        if callee_ctx is None or callee_ctx.primary() is None:
-            return '?'
-        primary = callee_ctx.primary()
-        if primary.IDENT() is None:
-            return '?'
-        if primary.getChild(0).getText() == 'new':
-            return '?'
-        info = self.lookup(primary.IDENT().getText())
-        if info is None:
-            return '?'
-        if info.get('categoria') == 'function':
-            return info.get('tipo_retorno', '?')
-        return '?'
-
     # ─── Expressões: cadeia que devolve tipo + valida operadores ─
+
+    def _is_array_literal(self, expr_ctx):
+        if expr_ctx.assignOp() is not None:
+            return False
+        or_ctx = expr_ctx.orExpr()
+        if or_ctx.orExpr() is not None: return False
+        and_ctx = or_ctx.andExpr()
+        if and_ctx.andExpr() is not None: return False
+        cmp_ctx = and_ctx.cmpExpr()
+        if cmp_ctx.cmpExpr() is not None: return False
+        add_ctx = cmp_ctx.addExpr()
+        if add_ctx.addExpr() is not None: return False
+        mul_ctx = add_ctx.mulExpr()
+        if mul_ctx.mulExpr() is not None: return False
+        pow_ctx = mul_ctx.powExpr()
+        if pow_ctx.powExpr() is not None: return False
+        unary_ctx = pow_ctx.unaryExpr()
+        if unary_ctx.postfixExpr() is None: return False
+        postfix_ctx = unary_ctx.postfixExpr()
+        if postfix_ctx.primary() is None: return False
+        primary = postfix_ctx.primary()
+        return primary.getChildCount() > 0 and primary.getChild(0).getText() == '['
 
     def visitExpr(self, ctx):
         if ctx.assignOp() is None:
             return self.visit(ctx.orExpr())
+
+        if self._is_array_literal(ctx.expr()):
+            self.errors.add_error(
+                ctx.start.line,
+                "literal de vetor só pode aparecer na inicialização de uma declaração"
+            )
 
         lhs_type = self.visit(ctx.orExpr())
         rhs_type = self.visit(ctx.expr())
@@ -600,25 +784,32 @@ class SemanticAnalyzer(JSSVisitor):
         if first_text == 'null':
             return 'null'
         if first_text == 'this':
-            return 'this'
+            if self._class_stack:
+                return self._class_stack[-1]
+            self.errors.add_error(ctx.start.line, "'this' usado fora de uma classe")
+            return '?'
 
         if first_text == 'new':
             ident_tok = ctx.IDENT()
             nome = ident_tok.getText()
             linha = ident_tok.symbol.line
             info = self.lookup(nome)
+
+            arg_types = []
+            if ctx.argList() is not None:
+                for e in ctx.argList().expr():
+                    arg_types.append(self.visit(e))
+
             if info is None:
                 self.errors.add_error(linha, f"classe '{nome}' não declarada")
-                if ctx.argList() is not None:
-                    self.visit(ctx.argList())
                 return '?'
             if info.get('categoria') != 'class':
                 self.errors.add_error(linha, f"'{nome}' não é uma classe")
-                if ctx.argList() is not None:
-                    self.visit(ctx.argList())
                 return '?'
-            if ctx.argList() is not None:
-                self.visit(ctx.argList())
+
+            ctor = info.get('constructor')
+            if ctor is not None:
+                self._check_args(ctx, ctor['params'], arg_types, f"constructor de '{nome}'")
             return nome
 
         if ctx.IDENT() is not None:
@@ -635,8 +826,22 @@ class SemanticAnalyzer(JSSVisitor):
             return '?'
 
         if ctx.castType() is not None:
-            self.visit(ctx.expr(0))
-            return ctx.castType().getText()
+            target = ctx.castType().getText()
+            arg_type = self.visit(ctx.expr(0))
+            if arg_type != '?':
+                if target == 'str':
+                    if not self._is_primitive(arg_type):
+                        self.errors.add_error(
+                            ctx.start.line,
+                            f"cast 'str()' requer operando primitivo, recebeu '{arg_type}'"
+                        )
+                else:
+                    if arg_type not in ('int', 'real', 'bool'):
+                        self.errors.add_error(
+                            ctx.start.line,
+                            f"cast '{target}()' requer operando numérico ou 'bool', recebeu '{arg_type}'"
+                        )
+            return target
 
         if first_text == '(':
             return self.visit(ctx.expr(0))
@@ -658,92 +863,190 @@ class SemanticAnalyzer(JSSVisitor):
             return self.visit(ctx.primary())
 
         if ctx.argList() is not None:
-            self._check_call(ctx)
-            self.visit(ctx.argList())
-            return self._infer_call_return_type(ctx.postfixExpr())
+            return self._handle_call(ctx)
 
         if ctx.IDENT() is not None:
-            self._check_member_access(ctx)
-            self.visit(ctx.postfixExpr())
-            return '?'
+            return self._handle_member_access(ctx)
 
         if ctx.expr() is not None:
-            base_type = self.visit(ctx.postfixExpr())
-            index_type = self.visit(ctx.expr())
-            linha = ctx.expr().start.line
-
-            if base_type != '?' and not base_type.endswith('[]'):
-                self.errors.add_error(
-                    linha,
-                    f"acesso com '[]' em valor não-vetor (tipo '{base_type}')"
-                )
-                return '?'
-
-            if index_type not in ('int', '?'):
-                self.errors.add_error(
-                    linha,
-                    f"índice de vetor deve ser 'int', recebeu '{index_type}'"
-                )
-
-            if base_type and base_type.endswith('[]'):
-                return base_type[:-2]
-            return '?'
+            return self._handle_array_access(ctx)
 
         return '?'
 
-    def _check_call(self, ctx):
+    def _handle_call(self, ctx):
         callee = ctx.postfixExpr()
-        if callee is None or callee.primary() is None:
-            return
+        arg_types = []
+        if ctx.argList() is not None:
+            for e in ctx.argList().expr():
+                arg_types.append(self.visit(e))
+
+        if callee.primary() is not None:
+            return self._direct_call(callee, ctx, arg_types)
+
+        if callee.IDENT() is not None:
+            return self._method_call(callee, ctx, arg_types)
+
+        return '?'
+
+    def _direct_call(self, callee, call_ctx, arg_types):
         primary = callee.primary()
         if primary.IDENT() is None:
-            return
+            return '?'
         if primary.getChild(0).getText() == 'new':
-            return
+            return '?'
 
         ident_tok = primary.IDENT()
         nome = ident_tok.getText()
         linha = ident_tok.symbol.line
         info = self.lookup(nome)
         if info is None:
-            return
+            return '?'
 
-        categoria = info.get('categoria')
-        if categoria in ('function', 'builtin_function'):
-            return
-        if categoria == 'class':
+        cat = info.get('categoria')
+        if cat == 'function':
+            self._check_args(call_ctx, info.get('params', []), arg_types, f"função '{nome}'")
+            return info.get('tipo_retorno', '?')
+        if cat == 'builtin_function':
+            if nome == 'input':
+                self._validate_input_args(call_ctx, arg_types)
+            return 'void'
+        if cat == 'class':
             self.errors.add_error(
                 linha,
                 f"para criar um objeto da classe '{nome}', use 'new {nome}(...)'"
             )
-        else:
+            return '?'
+        self.errors.add_error(
+            linha,
+            f"'{nome}' não é uma função e não pode ser chamada"
+        )
+        return '?'
+
+    def _method_call(self, callee, call_ctx, arg_types):
+        member_tok = callee.IDENT()
+        member = member_tok.getText()
+        line = member_tok.symbol.line
+        base = callee.postfixExpr()
+
+        if base.primary() is not None:
+            primary = base.primary()
+            if primary.IDENT() is not None and primary.getChild(0).getText() != 'new':
+                base_info = self.lookup(primary.IDENT().getText())
+                if base_info is not None and base_info.get('categoria') == 'builtin_obj':
+                    membros = base_info.get('membros', set())
+                    if member not in membros:
+                        self.errors.add_error(
+                            line,
+                            f"'{primary.IDENT().getText()}' não possui o membro '{member}'"
+                        )
+                    elif member == 'log':
+                        self._validate_console_log_args(call_ctx, arg_types)
+                    return 'void'
+
+        base_type = self.visit(base)
+
+        if base_type == '?':
+            return '?'
+        if base_type == 'null':
+            self.errors.add_error(line, "chamada de método em 'null'")
+            return '?'
+        if self._is_primitive(base_type) or base_type.endswith('[]'):
+            self.errors.add_error(
+                line,
+                f"chamada '.{member}()' em tipo '{base_type}' (não é objeto)"
+            )
+            return '?'
+
+        class_info = self.lookup(base_type)
+        if class_info is None or class_info.get('categoria') != 'class':
+            return '?'
+
+        metodos = class_info.get('metodos', {})
+        if member not in metodos:
+            atributos = class_info.get('atributos', {})
+            if member in atributos:
+                self.errors.add_error(
+                    line,
+                    f"'{member}' é atributo de '{base_type}', não pode ser chamado"
+                )
+            else:
+                self.errors.add_error(
+                    line,
+                    f"método '{member}' não existe em '{base_type}'"
+                )
+            return '?'
+
+        method_info = metodos[member]
+        self._check_args(
+            call_ctx, method_info['params'], arg_types,
+            f"método '{base_type}.{member}'"
+        )
+        return method_info['tipo_retorno']
+
+    def _handle_member_access(self, ctx):
+        member_tok = ctx.IDENT()
+        member = member_tok.getText()
+        line = member_tok.symbol.line
+        base = ctx.postfixExpr()
+
+        if base.primary() is not None:
+            primary = base.primary()
+            if primary.IDENT() is not None and primary.getChild(0).getText() != 'new':
+                base_info = self.lookup(primary.IDENT().getText())
+                if base_info is not None and base_info.get('categoria') == 'builtin_obj':
+                    membros = base_info.get('membros', set())
+                    if member not in membros:
+                        self.errors.add_error(
+                            line,
+                            f"'{primary.IDENT().getText()}' não possui o membro '{member}'"
+                        )
+                    return '?'
+
+        base_type = self.visit(base)
+
+        if base_type == '?':
+            return '?'
+        if base_type == 'null':
+            self.errors.add_error(line, f"acesso '.{member}' em 'null'")
+            return '?'
+        if self._is_primitive(base_type) or base_type.endswith('[]'):
+            self.errors.add_error(
+                line,
+                f"acesso '.{member}' em tipo '{base_type}' (não é objeto)"
+            )
+            return '?'
+
+        class_info = self.lookup(base_type)
+        if class_info is None or class_info.get('categoria') != 'class':
+            return '?'
+
+        atributos = class_info.get('atributos', {})
+        if member in atributos:
+            return atributos[member]
+        if member in class_info.get('metodos', {}):
+            return '?'
+
+        self.errors.add_error(line, f"'{base_type}' não possui membro '{member}'")
+        return '?'
+
+    def _handle_array_access(self, ctx):
+        base_type = self.visit(ctx.postfixExpr())
+        index_type = self.visit(ctx.expr())
+        linha = ctx.expr().start.line
+
+        if base_type != '?' and not base_type.endswith('[]'):
             self.errors.add_error(
                 linha,
-                f"'{nome}' não é uma função e não pode ser chamada"
+                f"acesso com '[]' em valor não-vetor (tipo '{base_type}')"
+            )
+            return '?'
+
+        if index_type not in ('int', '?'):
+            self.errors.add_error(
+                linha,
+                f"índice de vetor deve ser 'int', recebeu '{index_type}'"
             )
 
-    def _check_member_access(self, ctx):
-        base = ctx.postfixExpr()
-        member_tok = ctx.IDENT()
-        if base is None or base.primary() is None:
-            return
-        primary = base.primary()
-        if primary.IDENT() is None:
-            return
-        if primary.getChild(0).getText() == 'new':
-            return
-
-        obj_name = primary.IDENT().getText()
-        info = self.lookup(obj_name)
-        if info is None:
-            return
-
-        if info.get('categoria') == 'builtin_obj':
-            member = member_tok.getText()
-            linha = member_tok.symbol.line
-            membros = info.get('membros', set())
-            if member not in membros:
-                self.errors.add_error(
-                    linha,
-                    f"'{obj_name}' não possui o membro '{member}'"
-                )
+        if base_type and base_type.endswith('[]'):
+            return base_type[:-2]
+        return '?'
