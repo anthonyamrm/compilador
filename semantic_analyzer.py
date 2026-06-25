@@ -1,4 +1,5 @@
 from JSSVisitor import JSSVisitor
+from JSSParser import JSSParser
 from error_listener import JSSErrorListener
 
 
@@ -13,6 +14,7 @@ class SemanticAnalyzer(JSSVisitor):
         self.scopes = [{}]
         self.errors = JSSErrorListener('Semântico')
         self._function_stack = []
+        self._loop_depth = 0
         self._register_builtins()
 
     # ─── Pilha de escopos ─────────────────────────────────────────
@@ -113,7 +115,7 @@ class SemanticAnalyzer(JSSVisitor):
             for p in params_ctx.param():
                 ident_tok = p.IDENT()
                 p_nome = ident_tok.getText()
-                p_tipo = p.type_().getText()
+                p_tipo = self._build_type(p.type_(), p.INT_LIT())
                 self.declare(
                     p_nome,
                     {'categoria': 'param', 'tipo': p_tipo},
@@ -158,10 +160,66 @@ class SemanticAnalyzer(JSSVisitor):
         )
         return None
 
+    def _check_cond_is_bool(self, expr_ctx, where):
+        cond_type = self.visit(expr_ctx)
+        if cond_type not in ('bool', '?'):
+            self.errors.add_error(
+                expr_ctx.start.line,
+                f"condição de '{where}' deve ser 'bool', recebeu '{cond_type}'"
+            )
+
+    def _for_parts(self, ctx):
+        cond = None
+        update = None
+        semi = 0
+        for i in range(ctx.getChildCount()):
+            child = ctx.getChild(i)
+            if child.getText() == ';':
+                semi += 1
+                continue
+            if isinstance(child, JSSParser.ExprContext):
+                if semi == 1:
+                    cond = child
+                elif semi == 2:
+                    update = child
+        return cond, update
+
+    def visitIfStmt(self, ctx):
+        self._check_cond_is_bool(ctx.expr(), 'if')
+        self.visit(ctx.block())
+        if ctx.elseClause() is not None:
+            self.visit(ctx.elseClause())
+        return None
+
+    def visitWhileStmt(self, ctx):
+        self._check_cond_is_bool(ctx.expr(), 'while')
+        self._loop_depth += 1
+        self.visit(ctx.block())
+        self._loop_depth -= 1
+        return None
+
     def visitForStmt(self, ctx):
         self.push_scope()
-        self.visitChildren(ctx)
+        self._loop_depth += 1
+
+        if ctx.forInit() is not None:
+            self.visit(ctx.forInit())
+
+        cond, update = self._for_parts(ctx)
+        if cond is not None:
+            self._check_cond_is_bool(cond, 'for')
+        if update is not None:
+            self.visit(update)
+
+        self.visit(ctx.block())
+
+        self._loop_depth -= 1
         self.pop_scope()
+        return None
+
+    def visitBreakStmt(self, ctx):
+        if self._loop_depth == 0:
+            self.errors.add_error(ctx.start.line, "'break' fora de um loop")
         return None
 
     def visitReturnStmt(self, ctx):
@@ -191,32 +249,30 @@ class SemanticAnalyzer(JSSVisitor):
 
     # ─── Declarações de variável e constante ─────────────────────
 
-    def visitVarDecl(self, ctx):
-        tipo = self._build_type(ctx.type_(), ctx.INT_LIT())
-        for d in ctx.declarator():
+    def _declare_with_init(self, categoria, ctx_type, dims, declarators):
+        tipo = self._build_type(ctx_type, dims)
+        for d in declarators:
             ident_tok = d.IDENT()
             nome = ident_tok.getText()
             self.declare(
                 nome,
-                {'categoria': 'var', 'tipo': tipo},
+                {'categoria': categoria, 'tipo': tipo},
                 ident_tok.symbol.line,
             )
             if d.expr() is not None:
-                self.visit(d.expr())
+                init_type = self.visit(d.expr())
+                if not self._is_assignable(tipo, init_type):
+                    self.errors.add_error(
+                        d.start.line,
+                        f"não é possível inicializar '{nome}' (tipo '{tipo}') com valor do tipo '{init_type}'"
+                    )
+
+    def visitVarDecl(self, ctx):
+        self._declare_with_init('var', ctx.type_(), ctx.INT_LIT(), ctx.declarator())
         return None
 
     def visitVarDeclNoSemi(self, ctx):
-        tipo = self._build_type(ctx.type_(), ctx.INT_LIT())
-        for d in ctx.declarator():
-            ident_tok = d.IDENT()
-            nome = ident_tok.getText()
-            self.declare(
-                nome,
-                {'categoria': 'var', 'tipo': tipo},
-                ident_tok.symbol.line,
-            )
-            if d.expr() is not None:
-                self.visit(d.expr())
+        self._declare_with_init('var', ctx.type_(), ctx.INT_LIT(), ctx.declarator())
         return None
 
     def visitConstDecl(self, ctx):
@@ -228,7 +284,12 @@ class SemanticAnalyzer(JSSVisitor):
             {'categoria': 'const', 'tipo': tipo},
             ident_tok.symbol.line,
         )
-        self.visit(ctx.expr())
+        init_type = self.visit(ctx.expr())
+        if not self._is_assignable(tipo, init_type):
+            self.errors.add_error(
+                ctx.start.line,
+                f"não é possível inicializar constante '{nome}' (tipo '{tipo}') com valor do tipo '{init_type}'"
+            )
         return None
 
     # ─── Sistema de tipos: helpers ───────────────────────────────
@@ -313,6 +374,81 @@ class SemanticAnalyzer(JSSVisitor):
             return '?'
         return operand
 
+    def _is_assignable(self, target, value):
+        if '?' in (target, value):
+            return True
+        if target == value:
+            return True
+        if target == 'real' and value == 'int':
+            return True
+        if value == 'null' and not self._is_primitive(target) and target != 'null':
+            return True
+        if 'this' in (target, value):
+            return True
+        return False
+
+    def _extract_lvalue(self, or_ctx):
+        if or_ctx.orExpr() is not None:
+            return None
+        and_ctx = or_ctx.andExpr()
+        if and_ctx.andExpr() is not None:
+            return None
+        cmp_ctx = and_ctx.cmpExpr()
+        if cmp_ctx.cmpExpr() is not None:
+            return None
+        add_ctx = cmp_ctx.addExpr()
+        if add_ctx.addExpr() is not None:
+            return None
+        mul_ctx = add_ctx.mulExpr()
+        if mul_ctx.mulExpr() is not None:
+            return None
+        pow_ctx = mul_ctx.powExpr()
+        if pow_ctx.powExpr() is not None:
+            return None
+        unary_ctx = pow_ctx.unaryExpr()
+        if unary_ctx.postfixExpr() is None:
+            return None
+        return unary_ctx.postfixExpr()
+
+    def _check_lvalue_assignable(self, postfix_ctx):
+        if postfix_ctx.argList() is not None:
+            self.errors.add_error(
+                postfix_ctx.start.line,
+                "não é possível atribuir ao resultado de uma chamada"
+            )
+            return
+        if postfix_ctx.primary() is None:
+            return
+        primary = postfix_ctx.primary()
+        if primary.IDENT() is None:
+            self.errors.add_error(
+                postfix_ctx.start.line,
+                "lado esquerdo da atribuição não é um destino válido"
+            )
+            return
+        if primary.getChild(0).getText() == 'new':
+            self.errors.add_error(
+                postfix_ctx.start.line,
+                "não é possível atribuir a uma expressão 'new'"
+            )
+            return
+        ident_tok = primary.IDENT()
+        nome = ident_tok.getText()
+        info = self.lookup(nome)
+        if info is None:
+            return
+        cat = info.get('categoria')
+        if cat == 'const':
+            self.errors.add_error(
+                ident_tok.symbol.line,
+                f"não é possível atribuir à constante '{nome}'"
+            )
+        elif cat not in ('var', 'param'):
+            self.errors.add_error(
+                ident_tok.symbol.line,
+                f"'{nome}' não é uma variável e não pode receber atribuição"
+            )
+
     def _infer_call_return_type(self, callee_ctx):
         if callee_ctx is None or callee_ctx.primary() is None:
             return '?'
@@ -333,8 +469,38 @@ class SemanticAnalyzer(JSSVisitor):
     def visitExpr(self, ctx):
         if ctx.assignOp() is None:
             return self.visit(ctx.orExpr())
-        self.visit(ctx.orExpr())
-        return self.visit(ctx.expr())
+
+        lhs_type = self.visit(ctx.orExpr())
+        rhs_type = self.visit(ctx.expr())
+        op = ctx.assignOp().getText()
+        line = ctx.start.line
+
+        lvalue = self._extract_lvalue(ctx.orExpr())
+        if lvalue is None:
+            self.errors.add_error(line, f"lado esquerdo de '{op}' não é um destino atribuível")
+            return lhs_type
+
+        self._check_lvalue_assignable(lvalue)
+
+        if op == '=':
+            if not self._is_assignable(lhs_type, rhs_type):
+                self.errors.add_error(
+                    line,
+                    f"não é possível atribuir '{rhs_type}' a '{lhs_type}'"
+                )
+        else:
+            bin_op = op[:-1]
+            if bin_op == '%':
+                result = self._check_int_binop(ctx, lhs_type, rhs_type, bin_op)
+            else:
+                result = self._check_arith_binop(ctx, lhs_type, rhs_type, bin_op)
+            if result != '?' and not self._is_assignable(lhs_type, result):
+                self.errors.add_error(
+                    line,
+                    f"não é possível atribuir resultado '{result}' a '{lhs_type}'"
+                )
+
+        return lhs_type
 
     def visitOrExpr(self, ctx):
         if ctx.orExpr() is None:
