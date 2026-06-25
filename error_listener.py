@@ -10,5 +10,8 @@ class JSSErrorListener(ErrorListener):
     def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):
         self.errors.append(f"Erro {self.error_type} na linha {line}: {msg}")
 
+    def add_error(self, line, msg):
+        self.errors.append(f"Erro {self.error_type} na linha {line}: {msg}")
+
     def has_errors(self):
         return len(self.errors) > 0

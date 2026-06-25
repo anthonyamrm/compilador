@@ -1,8 +1,9 @@
 import sys
-from antlr4 import CommonTokenStream, FileStream, InputStream
+from antlr4 import CommonTokenStream, InputStream
 from JSSLexer import JSSLexer
 from JSSParser import JSSParser
 from error_listener import JSSErrorListener
+from semantic_analyzer import SemanticAnalyzer
 
 
 def compile(source):
@@ -32,26 +33,32 @@ def compile(source):
             print(err)
         return False
 
-    return tree
+    analyzer = SemanticAnalyzer()
+    analyzer.analyze(tree)
+    if analyzer.errors.has_errors():
+        for err in analyzer.errors.errors:
+            print(err)
+        return False
+
+    return True
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Uso: python3 main.py <arquivo.jss>")
+    if len(sys.argv) == 2:
+        filename = sys.argv[1]
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                source = f.read()
+        except FileNotFoundError:
+            print(f"Arquivo não encontrado: {filename}")
+            sys.exit(1)
+    elif len(sys.argv) == 1:
+        source = sys.stdin.read()
+    else:
+        print("Uso: python3 main.py [arquivo.jss]")
         sys.exit(1)
 
-    filename = sys.argv[1]
-
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            source = f.read()
-    except FileNotFoundError:
-        print(f"Arquivo não encontrado: {filename}")
-        sys.exit(1)
-
-    result = compile(source)
-
-    if result:
+    if compile(source):
         print("Compilação bem-sucedida.")
     else:
         sys.exit(1)

@@ -64,6 +64,11 @@ class JSSVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by JSSParser#castType.
+    def visitCastType(self, ctx:JSSParser.CastTypeContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by JSSParser#block.
     def visitBlock(self, ctx:JSSParser.BlockContext):
         return self.visitChildren(ctx)

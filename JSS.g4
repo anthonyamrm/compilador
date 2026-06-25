@@ -60,6 +60,14 @@ type
     | 'str'
     | 'bool'
     | 'void'
+    | IDENT
+    ;
+
+castType
+    : 'int'
+    | 'real'
+    | 'str'
+    | 'bool'
     ;
 
 // Bloco e statements
@@ -92,7 +100,7 @@ declarator
     ;
 
 constDecl
-    : 'const' type IDENT '=' expr ';'
+    : 'const' type ('[' INT_LIT ']')? IDENT '=' expr ';'
     ;
 
 returnStmt
@@ -207,7 +215,7 @@ primary
     | 'this'
     | IDENT
     | 'new' IDENT '(' argList ')'
-    | type '(' expr ')'
+    | castType '(' expr ')'
     | '(' expr ')'
     | '[' (expr (',' expr)*)? ']'
     ;
