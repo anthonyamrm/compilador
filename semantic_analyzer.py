@@ -43,9 +43,9 @@ class SemanticAnalyzer(JSSVisitor):
 
     # ─── Helpers ─────────────────────────────────────────────────
 
-    def _build_type(self, type_ctx, int_lit_token):
+    def _build_type(self, type_ctx, dims):
         base = type_ctx.getText()
-        return f"{base}[]" if int_lit_token is not None else base
+        return base + '[]' * len(dims)
 
     def _register_builtins(self):
         for nome, info in self.BUILTINS.items():

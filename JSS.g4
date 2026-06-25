@@ -88,11 +88,11 @@ statement
     ;
 
 varDecl
-    : 'let' type ('[' INT_LIT ']')? declarator (',' declarator)* ';'
+    : 'let' type ('[' INT_LIT ']')* declarator (',' declarator)* ';'
     ;
 
 varDeclNoSemi
-    : 'let' type ('[' INT_LIT ']')? declarator (',' declarator)*
+    : 'let' type ('[' INT_LIT ']')* declarator (',' declarator)*
     ;
 
 declarator
@@ -100,7 +100,7 @@ declarator
     ;
 
 constDecl
-    : 'const' type ('[' INT_LIT ']')? IDENT '=' expr ';'
+    : 'const' type ('[' INT_LIT ']')* IDENT '=' expr ';'
     ;
 
 returnStmt
