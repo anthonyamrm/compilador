@@ -68,11 +68,11 @@ class SemanticAnalyzer(JSSVisitor):
     def _declare_function(self, ctx):
         ident_tok = ctx.IDENT()
         nome = ident_tok.getText()
-        tipo_retorno = ctx.type_().getText()
+        tipo_retorno = self._build_type(ctx.type_(), ctx.INT_LIT())
         param_types = []
         if ctx.params() is not None:
             for p in ctx.params().param():
-                param_types.append(p.type_().getText())
+                param_types.append(self._build_type(p.type_(), p.INT_LIT()))
         self.declare(
             nome,
             {
@@ -132,7 +132,7 @@ class SemanticAnalyzer(JSSVisitor):
     def visitFunctionDecl(self, ctx):
         ident_tok = ctx.IDENT()
         nome = ident_tok.getText()
-        tipo_retorno = ctx.type_().getText()
+        tipo_retorno = self._build_type(ctx.type_(), ctx.INT_LIT())
         self._enter_callable(
             ctx.params(), ctx.block(),
             tipo_retorno, nome, ident_tok.symbol.line, 'function',
@@ -151,7 +151,7 @@ class SemanticAnalyzer(JSSVisitor):
     def visitMethodDecl(self, ctx):
         ident_tok = ctx.IDENT()
         nome = ident_tok.getText()
-        tipo_retorno = ctx.type_().getText()
+        tipo_retorno = self._build_type(ctx.type_(), ctx.INT_LIT())
         self._enter_callable(
             ctx.params(), ctx.block(),
             tipo_retorno, nome, ident_tok.symbol.line, 'method',

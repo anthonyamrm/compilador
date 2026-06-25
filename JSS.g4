@@ -9,14 +9,13 @@ program
 topDecl
     : functionDecl
     | classDecl
-    | varDecl
-    | constDecl
+    | statement
     ;
 
 // Funções
 
 functionDecl
-    : 'function' type IDENT '(' params ')' block
+    : 'function' type ('[' INT_LIT ']')* IDENT '(' params ')' block
     ;
 
 params
@@ -25,7 +24,7 @@ params
     ;
 
 param
-    : type IDENT
+    : type ('[' INT_LIT ']')* IDENT
     ;
 
 // Classes
@@ -45,11 +44,11 @@ constructorDecl
     ;
 
 methodDecl
-    : type IDENT '(' params ')' block
+    : type ('[' INT_LIT ']')* IDENT '(' params ')' block
     ;
 
 attrDecl
-    : type IDENT ';'
+    : type ('[' INT_LIT ']')* IDENT ';'
     ;
 
 // Tipos
