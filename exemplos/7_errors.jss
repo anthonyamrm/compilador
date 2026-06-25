@@ -47,15 +47,15 @@ let int id = this.id;
 
 //variavel não declarado em for
 let int n = 10;
-for(i = 0+0; i < n; i++){
+for(i = 0+0; i < n; ++i){
     console.log(i);
 }
 
 //variavel não declarado em for
 let int x = 0;
 let int y = 0;
-for(let int i = 0+0; i < n; i++){
+for(let int i = 0+0; i < n; ++i){
     let int x;
-    x++;
-    y++;
+    ++x;
+    ++y;
 }

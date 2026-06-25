@@ -468,10 +468,10 @@ class SemanticAnalyzer(JSSVisitor):
             return '?'
         line = ctx.start.line
         if op == '+' and (left == 'str' or right == 'str'):
-            other = right if left == 'str' else left
-            if self._is_primitive(other):
+            if left == 'str' and right == 'str':
                 return 'str'
-            self.errors.add_error(line, f"operador '+' não pode concatenar 'str' com '{other}'")
+            other = right if left == 'str' else left
+            self.errors.add_error(line, f"operador '+' requer dois operandos 'str' para concatenação, recebeu '{left}' e '{right}'")
             return '?'
         if not (self._is_numeric(left) and self._is_numeric(right)):
             self.errors.add_error(line, f"operador '{op}' requer operandos numéricos, recebeu '{left}' e '{right}'")
@@ -900,6 +900,7 @@ class SemanticAnalyzer(JSSVisitor):
         linha = ident_tok.symbol.line
         info = self.lookup(nome)
         if info is None:
+            self.errors.add_error(linha, f"identificador '{nome}' não declarado")
             return '?'
 
         cat = info.get('categoria')
