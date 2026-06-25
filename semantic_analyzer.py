@@ -410,6 +410,16 @@ class SemanticAnalyzer(JSSVisitor):
             return None
         return unary_ctx.postfixExpr()
 
+    def _base_ident_of_postfix(self, postfix_ctx):
+        while postfix_ctx is not None:
+            if postfix_ctx.primary() is not None:
+                primary = postfix_ctx.primary()
+                if primary.IDENT() is not None and primary.getChild(0).getText() != 'new':
+                    return primary.IDENT().getText()
+                return None
+            postfix_ctx = postfix_ctx.postfixExpr()
+        return None
+
     def _check_lvalue_assignable(self, postfix_ctx):
         if postfix_ctx.argList() is not None:
             self.errors.add_error(
@@ -417,6 +427,21 @@ class SemanticAnalyzer(JSSVisitor):
                 "não é possível atribuir ao resultado de uma chamada"
             )
             return
+
+        if postfix_ctx.expr() is not None:
+            base_ident = self._base_ident_of_postfix(postfix_ctx.postfixExpr())
+            if base_ident is not None:
+                info = self.lookup(base_ident)
+                if info is not None and info.get('categoria') == 'const':
+                    self.errors.add_error(
+                        postfix_ctx.start.line,
+                        f"não é possível alterar elemento do vetor constante '{base_ident}'"
+                    )
+            return
+
+        if postfix_ctx.IDENT() is not None:
+            return
+
         if postfix_ctx.primary() is None:
             return
         primary = postfix_ctx.primary()
@@ -644,7 +669,22 @@ class SemanticAnalyzer(JSSVisitor):
 
         if ctx.expr() is not None:
             base_type = self.visit(ctx.postfixExpr())
-            self.visit(ctx.expr())
+            index_type = self.visit(ctx.expr())
+            linha = ctx.expr().start.line
+
+            if base_type != '?' and not base_type.endswith('[]'):
+                self.errors.add_error(
+                    linha,
+                    f"acesso com '[]' em valor não-vetor (tipo '{base_type}')"
+                )
+                return '?'
+
+            if index_type not in ('int', '?'):
+                self.errors.add_error(
+                    linha,
+                    f"índice de vetor deve ser 'int', recebeu '{index_type}'"
+                )
+
             if base_type and base_type.endswith('[]'):
                 return base_type[:-2]
             return '?'
