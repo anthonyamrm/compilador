@@ -231,30 +231,259 @@ class SemanticAnalyzer(JSSVisitor):
         self.visit(ctx.expr())
         return None
 
+    # ─── Sistema de tipos: helpers ───────────────────────────────
+
+    def _is_numeric(self, t):
+        return t in ('int', 'real')
+
+    def _is_primitive(self, t):
+        return t in ('int', 'real', 'str', 'bool')
+
+    def _check_arith_binop(self, ctx, left, right, op):
+        if '?' in (left, right):
+            return '?'
+        line = ctx.start.line
+        if op == '+' and (left == 'str' or right == 'str'):
+            other = right if left == 'str' else left
+            if self._is_primitive(other):
+                return 'str'
+            self.errors.add_error(line, f"operador '+' não pode concatenar 'str' com '{other}'")
+            return '?'
+        if not (self._is_numeric(left) and self._is_numeric(right)):
+            self.errors.add_error(line, f"operador '{op}' requer operandos numéricos, recebeu '{left}' e '{right}'")
+            return '?'
+        if 'real' in (left, right):
+            return 'real'
+        return 'int'
+
+    def _check_int_binop(self, ctx, left, right, op):
+        if '?' in (left, right):
+            return '?'
+        if left != 'int' or right != 'int':
+            self.errors.add_error(ctx.start.line, f"operador '{op}' requer operandos 'int', recebeu '{left}' e '{right}'")
+            return '?'
+        return 'int'
+
+    def _check_rel_binop(self, ctx, left, right, op):
+        if '?' in (left, right):
+            return '?'
+        line = ctx.start.line
+        if left.endswith('[]') or right.endswith('[]'):
+            self.errors.add_error(line, f"operador '{op}' não pode ser aplicado em vetores")
+            return '?'
+        if not (self._is_primitive(left) and self._is_primitive(right)):
+            self.errors.add_error(line, f"operador '{op}' requer operandos primitivos, recebeu '{left}' e '{right}'")
+            return '?'
+        if left == right or (self._is_numeric(left) and self._is_numeric(right)):
+            return 'bool'
+        self.errors.add_error(line, f"operador '{op}' requer operandos de mesmo tipo, recebeu '{left}' e '{right}'")
+        return '?'
+
+    def _check_eq_binop(self, ctx, left, right, op):
+        if '?' in (left, right):
+            return '?'
+        if left == right:
+            return 'bool'
+        if self._is_numeric(left) and self._is_numeric(right):
+            return 'bool'
+        if 'null' in (left, right):
+            return 'bool'
+        self.errors.add_error(ctx.start.line, f"operador '{op}' requer operandos compatíveis, recebeu '{left}' e '{right}'")
+        return '?'
+
+    def _check_logical_binop(self, ctx, left, right, op):
+        if '?' in (left, right):
+            return '?'
+        if left != 'bool' or right != 'bool':
+            self.errors.add_error(ctx.start.line, f"operador '{op}' requer operandos 'bool', recebeu '{left}' e '{right}'")
+            return '?'
+        return 'bool'
+
+    def _check_unary_op(self, ctx, operand, op):
+        if operand == '?':
+            return '?'
+        line = ctx.start.line
+        if op == '!':
+            if operand != 'bool':
+                self.errors.add_error(line, f"operador '!' requer operando 'bool', recebeu '{operand}'")
+                return '?'
+            return 'bool'
+        if not self._is_numeric(operand):
+            self.errors.add_error(line, f"operador unário '{op}' requer operando numérico, recebeu '{operand}'")
+            return '?'
+        return operand
+
+    def _infer_call_return_type(self, callee_ctx):
+        if callee_ctx is None or callee_ctx.primary() is None:
+            return '?'
+        primary = callee_ctx.primary()
+        if primary.IDENT() is None:
+            return '?'
+        if primary.getChild(0).getText() == 'new':
+            return '?'
+        info = self.lookup(primary.IDENT().getText())
+        if info is None:
+            return '?'
+        if info.get('categoria') == 'function':
+            return info.get('tipo_retorno', '?')
+        return '?'
+
+    # ─── Expressões: cadeia que devolve tipo + valida operadores ─
+
+    def visitExpr(self, ctx):
+        if ctx.assignOp() is None:
+            return self.visit(ctx.orExpr())
+        self.visit(ctx.orExpr())
+        return self.visit(ctx.expr())
+
+    def visitOrExpr(self, ctx):
+        if ctx.orExpr() is None:
+            return self.visit(ctx.andExpr())
+        left = self.visit(ctx.orExpr())
+        right = self.visit(ctx.andExpr())
+        return self._check_logical_binop(ctx, left, right, '||')
+
+    def visitAndExpr(self, ctx):
+        if ctx.andExpr() is None:
+            return self.visit(ctx.cmpExpr())
+        left = self.visit(ctx.andExpr())
+        right = self.visit(ctx.cmpExpr())
+        return self._check_logical_binop(ctx, left, right, '&&')
+
+    def visitCmpExpr(self, ctx):
+        if ctx.cmpExpr() is None:
+            return self.visit(ctx.addExpr())
+        left = self.visit(ctx.cmpExpr())
+        right = self.visit(ctx.addExpr())
+        op = ctx.cmpOp().getText()
+        if op in ('==', '!='):
+            return self._check_eq_binop(ctx, left, right, op)
+        return self._check_rel_binop(ctx, left, right, op)
+
+    def visitAddExpr(self, ctx):
+        if ctx.addExpr() is None:
+            return self.visit(ctx.mulExpr())
+        left = self.visit(ctx.addExpr())
+        right = self.visit(ctx.mulExpr())
+        op = ctx.getChild(1).getText()
+        return self._check_arith_binop(ctx, left, right, op)
+
+    def visitMulExpr(self, ctx):
+        if ctx.mulExpr() is None:
+            return self.visit(ctx.powExpr())
+        left = self.visit(ctx.mulExpr())
+        right = self.visit(ctx.powExpr())
+        op = ctx.getChild(1).getText()
+        if op == '%':
+            return self._check_int_binop(ctx, left, right, op)
+        return self._check_arith_binop(ctx, left, right, op)
+
+    def visitPowExpr(self, ctx):
+        if ctx.powExpr() is None:
+            return self.visit(ctx.unaryExpr())
+        left = self.visit(ctx.unaryExpr())
+        right = self.visit(ctx.powExpr())
+        return self._check_int_binop(ctx, left, right, '**')
+
+    def visitUnaryExpr(self, ctx):
+        if ctx.postfixExpr() is not None:
+            return self.visit(ctx.postfixExpr())
+        op = ctx.getChild(0).getText()
+        operand = self.visit(ctx.unaryExpr())
+        return self._check_unary_op(ctx, operand, op)
+
     # ─── Uso de identificadores ──────────────────────────────────
 
     def visitPrimary(self, ctx):
-        ident_tok = ctx.IDENT()
-        if ident_tok is not None:
+        if ctx.INT_LIT() is not None:
+            return 'int'
+        if ctx.REAL_LIT() is not None:
+            return 'real'
+        if ctx.STR_LIT() is not None:
+            return 'str'
+
+        first_text = ctx.getChild(0).getText() if ctx.getChildCount() > 0 else ''
+
+        if first_text in ('true', 'false'):
+            return 'bool'
+        if first_text == 'null':
+            return 'null'
+        if first_text == 'this':
+            return 'this'
+
+        if first_text == 'new':
+            ident_tok = ctx.IDENT()
             nome = ident_tok.getText()
             linha = ident_tok.symbol.line
-            is_new = ctx.getChild(0).getText() == 'new'
             info = self.lookup(nome)
             if info is None:
-                if is_new:
-                    self.errors.add_error(linha, f"classe '{nome}' não declarada")
-                else:
-                    self.errors.add_error(linha, f"identificador '{nome}' não declarado")
-            elif is_new and info.get('categoria') != 'class':
+                self.errors.add_error(linha, f"classe '{nome}' não declarada")
+                if ctx.argList() is not None:
+                    self.visit(ctx.argList())
+                return '?'
+            if info.get('categoria') != 'class':
                 self.errors.add_error(linha, f"'{nome}' não é uma classe")
-        return self.visitChildren(ctx)
+                if ctx.argList() is not None:
+                    self.visit(ctx.argList())
+                return '?'
+            if ctx.argList() is not None:
+                self.visit(ctx.argList())
+            return nome
+
+        if ctx.IDENT() is not None:
+            ident_tok = ctx.IDENT()
+            nome = ident_tok.getText()
+            linha = ident_tok.symbol.line
+            info = self.lookup(nome)
+            if info is None:
+                self.errors.add_error(linha, f"identificador '{nome}' não declarado")
+                return '?'
+            cat = info.get('categoria')
+            if cat in ('var', 'const', 'param'):
+                return info.get('tipo', '?')
+            return '?'
+
+        if ctx.castType() is not None:
+            self.visit(ctx.expr(0))
+            return ctx.castType().getText()
+
+        if first_text == '(':
+            return self.visit(ctx.expr(0))
+
+        if first_text == '[':
+            exprs = ctx.expr()
+            if not exprs:
+                return '?[]'
+            elem_types = [self.visit(e) for e in exprs]
+            first = elem_types[0]
+            if first != '?' and all(t == first for t in elem_types):
+                return f'{first}[]'
+            return '?[]'
+
+        return '?'
 
     def visitPostfixExpr(self, ctx):
+        if ctx.primary() is not None:
+            return self.visit(ctx.primary())
+
         if ctx.argList() is not None:
             self._check_call(ctx)
-        elif ctx.IDENT() is not None:
+            self.visit(ctx.argList())
+            return self._infer_call_return_type(ctx.postfixExpr())
+
+        if ctx.IDENT() is not None:
             self._check_member_access(ctx)
-        return self.visitChildren(ctx)
+            self.visit(ctx.postfixExpr())
+            return '?'
+
+        if ctx.expr() is not None:
+            base_type = self.visit(ctx.postfixExpr())
+            self.visit(ctx.expr())
+            if base_type and base_type.endswith('[]'):
+                return base_type[:-2]
+            return '?'
+
+        return '?'
 
     def _check_call(self, ctx):
         callee = ctx.postfixExpr()
