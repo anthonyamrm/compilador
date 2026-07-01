@@ -38,10 +38,10 @@ function real calcularMedia(int a, int b, int c) {
 funcaoInexistente();
 
 // ERRO: parâmetro incorreto quantidade
-calcularMedia(2, 3)
+calcularMedia(2, 3);
 
 // ERRO: parâmetro incorreto tipo
-calcularMedia(2, 3, 4.0)
+calcularMedia(2, 3, 4.0);
 
 // ERRO: parâmetro incorreto tipo e quantidade
-calcularMedia(2.0, 3.0)
+calcularMedia(2.0, 3.0);

@@ -2,7 +2,7 @@
 
 Compilador para a linguagem **JSS (JavaScript Simplificado)**, desenvolvido como projeto final da disciplina de Compiladores — UFPI 2026.1.
 
-O front-end realiza **análise léxica, sintática e semântica** de programas escritos em JSS, reportando erros com o número de linha correspondente.
+O front-end realiza **análise léxica, sintática e semântica** de programas escritos em JSS, reportando erros com o número de linha correspondente. O back-end gera **LLVM IR** a partir da árvore validada e pode executar o programa via JIT.
 
 ---
 
@@ -10,11 +10,17 @@ O front-end realiza **análise léxica, sintática e semântica** de programas e
 
 - Python 3.10+
 - Java 11+ (para regenerar o lexer/parser via ANTLR4, se necessário)
-- Biblioteca ANTLR4 para Python:
+- Dependências Python (ANTLR4 runtime + [llvmlite](https://llvmlite.readthedocs.io/), usada para gerar/verificar/executar o LLVM IR):
 
 ```bash
-pip install antlr4-python3-runtime==4.13.2
+pip install -r requirements.txt
 ```
+
+- (Opcional, só para `--exe`) um compilador/linker C no sistema — `cc`,
+  `gcc` ou `clang`, usado apenas para linkar o objeto gerado pelo llvmlite
+  contra a libc.
+
+Não é necessário ter `clang`/`llc` instalados: o `llvmlite` já traz o LLVM embutido, tanto para verificar o IR gerado quanto para executá-lo via JIT (`--run`).
 
 ---
 
@@ -28,7 +34,9 @@ compilador/
 ├── JSSVisitor.py           # Visitor base (gerado pelo ANTLR4)
 ├── error_listener.py       # Listener de erros (léxico/sintático/semântico)
 ├── semantic_analyzer.py    # Analisador semântico (Visitor customizado)
+├── codegen.py               # Backend: geração de LLVM IR + execução via JIT
 ├── main.py                 # Ponto de entrada (CLI)
+├── requirements.txt         # Dependências Python
 ├── exemplos/               # Programas JSS de exemplo
 │   ├── 1_basics.jss
 │   ├── 2_operators.jss
@@ -61,6 +69,39 @@ Saídas possíveis:
 - `Erro Léxico na linha X: <mensagem>` — erro léxico
 - `Erro Sintático na linha X: <mensagem>` — erro sintático
 - `Erro Semântico na linha X: <mensagem>` — erro semântico
+
+Quando a compilação é bem-sucedida, o backend (`codegen.py`) gera o **LLVM IR**
+correspondente e grava num arquivo `.ll` ao lado da entrada (ex.:
+`exemplos/1_basics.jss` → `exemplos/1_basics.ll`). Flags adicionais:
+
+| Flag | Efeito |
+|---|---|
+| `-o ARQUIVO` | grava o `.ll` num caminho customizado em vez do padrão |
+| `--emit-llvm` | também imprime o LLVM IR gerado no stdout |
+| `--run` | executa o programa via JIT (llvmlite) logo após gerar o IR |
+| `--exe [SAIDA]` | gera um **executável nativo** (ver abaixo) |
+
+```bash
+# Gera exemplos/5_classes.ll e roda o programa via JIT
+python3 main.py exemplos/5_classes.jss --run
+
+# Só imprime o IR no stdout (sem rodar)
+python3 main.py exemplos/6_functions.jss --emit-llvm
+
+# Gera um executável nativo (exemplos/6_functions) e roda
+python3 main.py exemplos/6_functions.jss --exe
+./exemplos/6_functions
+
+# Caminho de saída customizado para o executável
+python3 main.py exemplos/6_functions.jss --exe /tmp/prog
+```
+
+Não é preciso ter `clang`/`llc` instalados — o `llvmlite` já embute o LLVM
+necessário para gerar o IR, verificar (`module.verify()`), executar via JIT
+(`--run`) e até compilar para código de máquina nativo (`--exe`). A única
+ferramenta externa usada é o **linker do sistema** (`cc`/`gcc`/`clang`, o que
+estiver disponível) na etapa final de `--exe`, para transformar o `.o` gerado
+pelo llvmlite num executável ligado à libc (`printf`, `malloc`, etc.).
 
 ---
 
@@ -140,11 +181,51 @@ O analisador semântico cobre:
 - **Constantes**: atribuição em `const`, alteração de atributos de objeto const, alteração de elementos de vetor const
 - **Tipos**: sistema de tipos completo conforme Tabela 1 do PDF (precedência de operadores e tipos aceitos)
 - **Conversão implícita**: `int → real` em operadores e atribuição; `+ str` para concatenação
-- **Funções**: nome único, parâmetros, return obrigatório, tipo de retorno bate com a expressão, tipo de retorno não pode ser vetor, validação de argumentos em chamadas
+- **Funções**: nome único, parâmetros, return obrigatório, tipo de retorno bate com a expressão (incluindo retorno de vetor), validação de argumentos em chamadas
 - **Classes**: atributos antes de métodos, construtor obrigatório, `new` com argumentos corretos, `this`, acesso a atributos/métodos, const objeto
 - **Controle de fluxo**: condição de `if/while/for` deve ser `bool`, `break` só dentro de loop
 - **Vetores**: índice `int`, base deve ser vetor, literal de vetor só na inicialização
 - **Funções nativas**: `input(vars)` recebe variáveis int/real/str; `console.log(...)` recebe primitivos; casts validam operandos
+
+---
+
+## Backend: geração de LLVM IR
+
+`codegen.py` implementa `LLVMCodeGenerator`, um segundo *visitor* sobre a
+mesma árvore ANTLR (`JSSVisitor`/`JSSParser`), estruturado como o
+`SemanticAnalyzer` (mesma pilha de escopos), mas que emite instruções LLVM
+via [`llvmlite`](https://llvmlite.readthedocs.io/) em vez de só inferir
+tipos. Só roda sobre programas que já passaram na análise semântica.
+
+Mapeamento de tipos JSS → LLVM:
+
+| JSS | LLVM |
+|---|---|
+| `int` | `i32` |
+| `real` | `double` |
+| `bool` | `i8` (0/1) |
+| `str` | `i8*` (string C, sempre alocada no heap) |
+| `ClassName` | `%ClassName*` (struct nomeado, sempre heap-alocado) |
+| `T[]` | `T_llvm*` (bloco malloc'ado; multi-dimensional = ponteiro de ponteiro, uma malloc por dimensão) |
+
+Pontos relevantes da implementação:
+
+- **Sem `free`**: não há coletor de lixo nem liberação manual — cada `new`,
+  cada array e cada resultado de concatenação de string aloca memória via
+  `malloc` que nunca é liberada. Aceitável para o escopo do trabalho, mas é
+  uma limitação conhecida.
+- **`console.log`/`input`** usam `printf`/`scanf` da libc (declaradas como
+  `extern` no módulo), com formato escolhido pelo tipo de cada argumento.
+- **Concatenação de strings** (`+`) e **potência** (`**`) usam funções
+  auxiliares geradas uma vez no módulo (`jss_str_concat`, `jss_ipow`), já
+  que o LLVM não tem instruções nativas para elas.
+- **`&&`/`||`** são gerados com curto-circuito real (branches + `phi`), não
+  avaliação ansiosa dos dois operandos.
+- O ponto de entrada real (`main() -> i32`, ABI C) executa, em ordem, todo
+  código de nível superior (variáveis/`console.log`/laços fora de função) e,
+  ao final, chama a função do usuário chamada `main` (se existir) — cobrindo
+  tanto exemplos "de script" (sem função `main`) quanto os que colocam tudo
+  dentro de `function void main()`.
 
 ---
 

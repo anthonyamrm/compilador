@@ -72,11 +72,6 @@ class SemanticAnalyzer(JSSVisitor):
         ident_tok = ctx.IDENT()
         nome = ident_tok.getText()
         tipo_retorno = self._build_type(ctx.type_(), ctx.INT_LIT())
-        if tipo_retorno.endswith('[]'):
-            self.errors.add_error(
-                ident_tok.symbol.line,
-                f"função '{nome}' não pode ter tipo de retorno vetor ('{tipo_retorno}')"
-            )
         param_types = []
         if ctx.params() is not None:
             for p in ctx.params().param():
@@ -143,11 +138,6 @@ class SemanticAnalyzer(JSSVisitor):
                 m_nome = m_tok.getText()
                 m_linha = m_tok.symbol.line
                 m_tipo = self._build_type(m.type_(), m.INT_LIT())
-                if m_tipo.endswith('[]'):
-                    self.errors.add_error(
-                        m_linha,
-                        f"método '{m_nome}' não pode ter tipo de retorno vetor ('{m_tipo}')"
-                    )
                 if m_nome in metodos or m_nome in atributos:
                     self.errors.add_error(m_linha, f"membro '{m_nome}' já declarado na classe '{nome}'")
                 else:

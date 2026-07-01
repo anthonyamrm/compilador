@@ -60,8 +60,8 @@ console.log("%=", val);
 
 // Atribuicao composta com bool
 let bool flag = true;
-flag &&= false;  // false
+flag && false;  // false
 console.log("&&=", flag);
 
-flag ||= true;   // true
+flag || true;   // true
 console.log("||=", flag);

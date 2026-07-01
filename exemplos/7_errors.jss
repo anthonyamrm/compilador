@@ -45,16 +45,15 @@ let str val4 = strSemReturn();
 // Uso de 'this' fora de classe
 let int id = this.id;
 
-//variavel não declarado em for
-let int n = 10;
-for(i = 0+0; i < n; ++i){
+//variavel nao declarado em for
+for(let int i = 0+0; i < n; ++i){
     console.log(i);
 }
 
-//variavel não declarado em for
+//variavel i local do bloco anterior nao declarada
 let int x = 0;
 let int y = 0;
-for(let int i = 0+0; i < n; ++i){
+for(i = 0+0; i < n; ++i){
     let int x;
     ++x;
     ++y;
