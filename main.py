@@ -7,7 +7,7 @@ from JSSLexer import JSSLexer
 from JSSParser import JSSParser
 from error_listener import JSSErrorListener
 from semantic_analyzer import SemanticAnalyzer
-from codegen import generate_module, run_jit, compile_to_executable, CodegenError
+from backend import generate_module, run_jit, compile_to_executable, CodegenError
 
 
 def compile(source):
@@ -77,7 +77,7 @@ def main():
     if tree is None:
         sys.exit(1)
 
-    print("Compilação bem-sucedida.")
+    print("Compilado!")
 
     try:
         llvm_ir = generate_module(tree, module_name=args.arquivo or 'jss_stdin')
@@ -109,7 +109,7 @@ def main():
         except CodegenError as exc:
             print(exc)
             sys.exit(1)
-        print(f"Executável gerado em: {exe_path}")
+        print(f"executavel gerado em:{exe_path}")
 
     if args.run:
         exit_code = run_jit(llvm_ir)

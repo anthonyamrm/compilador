@@ -54,7 +54,7 @@ class LLVMCodeGenerator(JSSVisitor):
         self._declare_externs()
         self._declare_helpers()
 
-    # ─── Pilha de escopos (mirror do semantic_analyzer) ───────────
+    #  Pilha de escopos 
 
     def push_scope(self):
         self.scopes.append({})
@@ -238,7 +238,7 @@ class LLVMCodeGenerator(JSSVisitor):
             return ir.Constant(self.llvm_type_for(to_type), None)
         return val
 
-    # ─── Ponto de entrada ───────────────────────────────────────────
+    #  Ponto de entrada 
 
     def generate(self, tree):
         self._pass1(tree)
@@ -270,7 +270,7 @@ class LLVMCodeGenerator(JSSVisitor):
                 self._generate_class_bodies(top.classDecl())
         self._generate_main(tree)
 
-    # ─── Fase 1: declarações ────────────────────────────────────────
+    #  declarações 
 
     def _declare_class_stub(self, ctx):
         nome = ctx.IDENT().getText()
@@ -1186,23 +1186,16 @@ def run_jit(llvm_ir):
 
 
 def emit_object_code(llvm_ir):
-    """Compila o LLVM IR para código de máquina nativo (bytes de um .o)."""
     binding.initialize_native_target()
     binding.initialize_native_asmprinter()
     mod = binding.parse_assembly(llvm_ir)
     mod.verify()
     target = binding.Target.from_default_triple()
-    # reloc='pic' é necessário para linkar num executável PIE (padrão do
-    # gcc/ld em distros modernas); codemodel='jitdefault' é só para o JIT.
     target_machine = target.create_target_machine(reloc='pic', codemodel='default')
     return target_machine.emit_object(mod)
 
 
 def compile_to_executable(llvm_ir, output_path, cc=None):
-    """Gera código objeto via llvmlite e chama um linker de sistema (cc/gcc/clang)
-    para produzir um executável nativo. Não depende de clang/llc para gerar o
-    .ll nem o .o (isso é tudo llvmlite); só a etapa final de link usa uma
-    ferramenta externa, pois llvmlite não faz linkedição."""
     cc = cc or shutil.which('cc') or shutil.which('gcc') or shutil.which('clang')
     if cc is None:
         raise CodegenError(
